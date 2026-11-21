@@ -101,3 +101,59 @@ def test_cross_year_transition_costs():
     # desired weights already match actual holdings.
     if first_day_2025["turnover"] > 0:
         assert first_day_2025["trading_cost"] > 0
+
+def test_cross_year_rebalancing_charges_exact_cost(monkeypatch):
+    import src.walk_forward as wf
+
+    # Two assets with zero daily returns.
+    # Consequently, weights cannot drift naturally.
+    dates = pd.to_datetime([
+        "2021-01-04", "2021-01-05",
+        "2022-01-03", "2022-01-04",
+        "2023-01-03", "2023-01-04",
+        "2024-01-02", "2024-01-03",
+        "2025-01-02", "2025-01-03",
+    ])
+
+    returns = pd.DataFrame(
+        0.0,
+        index=dates,
+        columns=["Asset_A", "Asset_B"]
+    )
+
+    # Force the optimiser to choose:
+    # 2024: 100% Asset_A
+    # 2025: 100% Asset_B
+    allocations = iter([
+        np.array([1.0, 0.0]),
+        np.array([0.0, 1.0])
+    ])
+
+    monkeypatch.setattr(
+        wf,
+        "minimum_variance",
+        lambda cov: next(allocations)
+    )
+
+    bt, weights = wf.walk_forward_backtest(
+        returns,
+        strategy="minimum_variance",
+        training_years=3,
+        cost_bps=10
+    )
+
+    transition = bt.loc["2025-01-02"]
+
+    # Sell 100% of Asset_A and buy 100% of Asset_B.
+    assert transition["turnover"] == pytest.approx(2.0)
+
+    # $100,000 × 2.0 × 0.001 = $200.
+    assert transition["trading_cost"] == pytest.approx(200.0)
+
+    # No market movement, only transaction costs.
+    assert transition["wealth"] == pytest.approx(99800.0)
+
+    assert transition["return"] == pytest.approx(-0.002)
+
+    assert weights.loc[2024, "Asset_A"] == pytest.approx(1.0)
+    assert weights.loc[2025, "Asset_B"] == pytest.approx(1.0)
